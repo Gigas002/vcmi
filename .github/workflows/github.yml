@@ -27,12 +27,7 @@ jobs:
         - name: Build Number
           run: |
             source '${{github.workspace}}/CI/get_package_name.sh'
-            if [ '${{ matrix.artifact_platform }}' ]; then
-              VCMI_PACKAGE_FILE_NAME+="-${{ matrix.artifact_platform }}"
-            fi
             echo VCMI_PACKAGE_FILE_NAME="$VCMI_PACKAGE_FILE_NAME" >> $GITHUB_ENV
-            echo VCMI_PACKAGE_NAME_SUFFIX="$VCMI_PACKAGE_NAME_SUFFIX" >> $GITHUB_ENV
-            echo VCMI_PACKAGE_GOLDMASTER="$VCMI_PACKAGE_GOLDMASTER" >> $GITHUB_ENV
           env:
             PULL_REQUEST: ${{ github.event.pull_request.number }}
 
