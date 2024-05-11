@@ -3,10 +3,7 @@ name: VCMI
 on:
   push:
     branches:
-      - features/*
-      - beta
-      - master
-      - develop
+      - tmp-feature-test
   pull_request:
   workflow_dispatch:
 
@@ -15,397 +12,39 @@ env:
   BUILD_TYPE: Release
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - platform: linux-qt6
-            os: ubuntu-22.04
-            test: 0
-            preset: linux-clang-test
-          - platform: linux
-            os: ubuntu-22.04
-            test: 1
-            preset: linux-gcc-test
-          - platform: linux
-            os: ubuntu-20.04
-            test: 0
-            preset: linux-gcc-debug
-          - platform: mac-intel
-            os: macos-13
-            test: 0
-            pack: 1
-            pack_type: Release
-            extension: dmg
-            preset: macos-conan-ninja-release
-            conan_profile: macos-intel
-            conan_options: --options with_apple_system_libs=True
-            artifact_platform: intel
-          - platform: mac-arm
-            os: macos-13
-            test: 0
-            pack: 1
-            pack_type: Release
-            extension: dmg
-            preset: macos-arm-conan-ninja-release
-            conan_profile: macos-arm
-            conan_options: --options with_apple_system_libs=True
-            artifact_platform: arm
-          - platform: ios
-            os: macos-13
-            test: 0
-            pack: 1
-            pack_type: Release
-            extension: ipa
-            preset: ios-release-conan-ccache
-            conan_profile: ios-arm64
-            conan_options: --options with_apple_system_libs=True
-          - platform: msvc
-            os: windows-latest
-            test: 0
-            pack: 1
-            pack_type: RelWithDebInfo
-            extension: exe
-            preset: windows-msvc-release-ccache
-          - platform: mingw
-            os: ubuntu-22.04
-            test: 0
-            pack: 1
-            pack_type: Release
-            extension: exe
-            cpack_args: -D CPACK_NSIS_EXECUTABLE=`which makensis`
-            cmake_args: -G Ninja
-            preset: windows-mingw-conan-linux
-            conan_profile: mingw64-linux.jinja
-          - platform: mingw-32
-            os: ubuntu-22.04
-            test: 0
-            pack: 1
-            pack_type: Release
-            extension: exe
-            cpack_args: -D CPACK_NSIS_EXECUTABLE=`which makensis`
-            cmake_args: -G Ninja
-            preset: windows-mingw-conan-linux
-            conan_profile: mingw32-linux.jinja
-          - platform: android-32
-            os: ubuntu-22.04
-            extension: apk
-            preset: android-conan-ninja-release
-            conan_profile: android-32
-            conan_options: --conf tools.android:ndk_path=$ANDROID_NDK_ROOT
-            artifact_platform: armeabi-v7a
-          - platform: android-64
-            os: ubuntu-22.04
-            extension: apk
-            preset: android-conan-ninja-release
-            conan_profile: android-64
-            conan_options: --conf tools.android:ndk_path=$ANDROID_NDK_ROOT
-            artifact_platform: arm64-v8a
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: recursive
-
-    - name: Ensure LF line endings
-      if: ${{ startsWith(matrix.preset, 'linux-clang-test') }}
-      run: |
-        find . -path ./.git -prune -o -path ./AI/FuzzyLite -prune -o -path ./test/googletest \
-        -o -path ./osx  -prune -o -type f \
-        -not -name '*.png' -and -not -name '*.vcxproj*' -and -not -name '*.props' -and -not -name '*.wav' -and -not -name '*.webm' -and -not -name '*.ico' -and -not -name '*.bat' -print0 | \
-        { ! xargs -0 grep -l -z -P '\r\n'; }
-
-    - name: Validate JSON
-      # the Python yaml module doesn't seem to work on mac-arm
-      # also, running it on multiple presets is redundant and slightly increases already long CI built times
-      if: ${{ startsWith(matrix.preset, 'linux-clang-test') }}
-      run: |
-        pip3 install jstyleson
-        python3 CI/linux-qt6/validate_json.py
-
-    - name: Dependencies
-      run: source '${{github.workspace}}/CI/${{matrix.platform}}/before_install.sh'
-      env:
-        VCMI_BUILD_PLATFORM: x64
-
-    # ensure the ccache for each PR is separate so they don't interfere with each other
-    # fall back to ccache of the vcmi/vcmi repo if no PR-specific ccache is found
-    - name: ccache for PRs
-      uses: hendrikmuhs/ccache-action@v1.2
-      if: ${{ github.event.number != '' }}
-      with:
-        key: ${{ matrix.preset }}-PR-${{ github.event.number }}
-        restore-keys: |
-          ${{ matrix.preset }}-PR-${{ github.event.number }}
-          ${{ matrix.preset }}-no-PR
-        # actual cache takes up less space, at most ~1 GB
-        max-size: "5G"
-        verbose: 2
-
-    - name: ccache for everything but PRs
-      uses: hendrikmuhs/ccache-action@v1.2
-      if: ${{ (github.repository == 'vcmi/vcmi' && github.event.number == '' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/master')) ||  github.repository != 'vcmi/vcmi' }}
-      with:
-        key: ${{ matrix.preset }}-no-PR
-        restore-keys: |
-          ${{ matrix.preset }}-no-PR
-        # actual cache takes up less space, at most ~1 GB
-        max-size: "5G"
-        verbose: 2
-
-    - name: Prepare Heroes 3 data
-      env:
-        HEROES_3_DATA_PASSWORD: ${{ secrets.HEROES_3_DATA_PASSWORD }}
-      if: ${{ env.HEROES_3_DATA_PASSWORD != '' && matrix.test == 1 }}
-      run: |
-        wget --progress=dot:giga https://github.com/vcmi-mods/vcmi-test-data/releases/download/v1.0/h3_assets.zip
-        7za x h3_assets.zip -p$HEROES_3_DATA_PASSWORD
-        mkdir -p ~/.local/share/vcmi/
-        mv h3_assets/* ~/.local/share/vcmi/
-
-    - uses: actions/setup-python@v5
-      if: "${{ matrix.conan_profile != '' }}"
-      with:
-        python-version: '3.10'
-
-    - name: Conan setup
-      if: "${{ matrix.conan_profile != '' }}"
-      run: |
-        pip3 install 'conan<2.0'
-        conan profile new default --detect
-        conan install . \
-          --install-folder=conan-generated \
-          --no-imports \
-          --build=never \
-          --profile:build=default \
-          --profile:host=CI/conan/${{ matrix.conan_profile }} \
-          ${{ matrix.conan_options }}
-      env:
-        GENERATE_ONLY_BUILT_CONFIG: 1
-
-    - name: Build Number
-      run: |
-        source '${{github.workspace}}/CI/get_package_name.sh'
-        if [ '${{ matrix.artifact_platform }}' ]; then
-          VCMI_PACKAGE_FILE_NAME+="-${{ matrix.artifact_platform }}"
-        fi
-        echo VCMI_PACKAGE_FILE_NAME="$VCMI_PACKAGE_FILE_NAME" >> $GITHUB_ENV
-        echo VCMI_PACKAGE_NAME_SUFFIX="$VCMI_PACKAGE_NAME_SUFFIX" >> $GITHUB_ENV
-        echo VCMI_PACKAGE_GOLDMASTER="$VCMI_PACKAGE_GOLDMASTER" >> $GITHUB_ENV
-      env:
-        PULL_REQUEST: ${{ github.event.pull_request.number }}
-
-    - name: Configure
-      run: |
-        if [[ ${{matrix.preset}} == linux-gcc-test ]]; then GCC13=1; fi
-        cmake -DENABLE_CCACHE:BOOL=ON --preset ${{ matrix.preset }} ${GCC13:+-DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13}
-
-    - name: Build
-      run: |
-        cmake --build --preset ${{matrix.preset}}
-
-    - name: Test
-      env:
-        HEROES_3_DATA_PASSWORD: ${{ secrets.HEROES_3_DATA_PASSWORD }}
-      if: ${{ env.HEROES_3_DATA_PASSWORD != '' && matrix.test == 1 }}
-      run: |
-        ctest --preset ${{matrix.preset}}
-
-    - name: Kill XProtect to work around CPack issue on macOS 
-      if: ${{ startsWith(matrix.platform, 'mac') }}
-      run: |
-        # Cf. https://github.com/actions/runner-images/issues/7522#issuecomment-1556766641
-        echo Killing...; sudo pkill -9 XProtect >/dev/null || true;
-        echo "Waiting..."; counter=0; while pgrep XProtect && ((counter < 20)); do sleep 3; ((counter++)); done
-        pgrep XProtect || true
-
-    - name: Pack
-      id: cpack
-      if: ${{ matrix.pack == 1 }}
-      run: |
-        cd '${{github.workspace}}/out/build/${{matrix.preset}}'
-        CPACK_PATH=`which -a cpack | grep -m1 -v -i chocolatey`
-        counter=0; until "$CPACK_PATH" -C ${{matrix.pack_type}} ${{ matrix.cpack_args }} || ((counter > 20)); do sleep 3; ((counter++)); done
-        test -f '${{github.workspace}}/CI/${{matrix.platform}}/post_pack.sh' \
-          && '${{github.workspace}}/CI/${{matrix.platform}}/post_pack.sh' '${{github.workspace}}' "$(ls '${{ env.VCMI_PACKAGE_FILE_NAME }}'.*)"
-        rm -rf _CPack_Packages
-
-    - name: Create Android package
-      if: ${{ startsWith(matrix.platform, 'android') }}
-      run: |
-        cd android
-        ./gradlew assembleDaily --info
-        echo ANDROID_APK_PATH="$(ls ${{ github.workspace }}/android/vcmi-app/build/outputs/apk/daily/*.${{ matrix.extension }})" >> $GITHUB_ENV
-
-    - name: Additional logs
-      if: ${{ failure() && steps.cpack.outcome == 'failure' && matrix.platform == 'msvc' }}
-      run: |
-        cat '${{github.workspace}}/out/build/${{matrix.preset}}/_CPack_Packages/win32/NSIS/project.nsi'
-        cat '${{github.workspace}}/out/build/${{matrix.preset}}/_CPack_Packages/win32/NSIS/NSISOutput.log'
-
-    - name: Artifacts
-      if: ${{ matrix.pack == 1 }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.VCMI_PACKAGE_FILE_NAME }} - ${{ matrix.platform }}
-        path: |
-          ${{github.workspace}}/out/build/${{matrix.preset}}/${{ env.VCMI_PACKAGE_FILE_NAME }}.${{ matrix.extension }}
-          
-    - name: Android artifacts
-      if: ${{ startsWith(matrix.platform, 'android') }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.VCMI_PACKAGE_FILE_NAME }} - ${{ matrix.platform }}
-        path: |
-          ${{ env.ANDROID_APK_PATH }}
-          
-    - name: Symbols
-      if: ${{ matrix.platform == 'msvc' }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.VCMI_PACKAGE_FILE_NAME }} - ${{ matrix.platform }} - symbols
-        path: |
-            ${{github.workspace}}/**/*.pdb
-
-    - name: Android JNI ${{matrix.platform}}
-      if: ${{ startsWith(matrix.platform, 'android') && github.ref == 'refs/heads/master' }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: Android JNI ${{matrix.platform}}
-        path: |
-          ${{ github.workspace }}/android/vcmi-app/src/main/jniLibs
-
-    - name: Upload build
-      if: ${{ (matrix.pack == 1 || startsWith(matrix.platform, 'android')) && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/features/')) && matrix.platform != 'msvc' && matrix.platform != 'mingw-32' }}
-      continue-on-error: true
-      run: |
-        if cd '${{github.workspace}}/android/vcmi-app/build/outputs/apk/daily' ; then
-          mv '${{ env.ANDROID_APK_PATH }}' "$VCMI_PACKAGE_FILE_NAME.${{ matrix.extension }}"
-        else
-          cd '${{github.workspace}}/out/build/${{matrix.preset}}'
-        fi
-        source '${{github.workspace}}/CI/upload_package.sh'
-      env:
-        DEPLOY_RSA: ${{ secrets.DEPLOY_RSA }}
-        PACKAGE_EXTENSION: ${{ matrix.extension }}
-  
-  # copy-pasted mostly
-  bundle_release:
-    
-    needs: build
-    if: always() && github.ref == 'refs/heads/master'
-    strategy:
-      matrix:
-        include:
-          - platform: android-32
-            os: ubuntu-22.04
-            extension: aab
-            preset: android-conan-ninja-release
-            conan_profile: android-32
-            conan_options: --conf tools.android:ndk_path=$ANDROID_NDK_ROOT
-            artifact_platform: aab
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: recursive
-
-    - name: Dependencies
-      run: source '${{github.workspace}}/CI/${{matrix.platform}}/before_install.sh'
-      env:
-        VCMI_BUILD_PLATFORM: x64
-
-    - uses: actions/setup-python@v5
-      if: "${{ matrix.conan_profile != '' }}"
-      with:
-        python-version: '3.10'
-
-    - name: Conan setup
-      if: "${{ matrix.conan_profile != '' }}"
-      run: |
-        pip3 install 'conan<2.0'
-        conan profile new default --detect
-        conan install . \
-          --install-folder=conan-generated \
-          --no-imports \
-          --build=never \
-          --profile:build=default \
-          --profile:host=CI/conan/${{ matrix.conan_profile }} \
-          ${{ matrix.conan_options }}
-      env:
-        GENERATE_ONLY_BUILT_CONFIG: 1
-
-    - name: Build Number
-      run: |
-        source '${{github.workspace}}/CI/get_package_name.sh'
-        if [ '${{ matrix.artifact_platform }}' ]; then
-          VCMI_PACKAGE_FILE_NAME+="-${{ matrix.artifact_platform }}"
-        fi
-        echo VCMI_PACKAGE_FILE_NAME="$VCMI_PACKAGE_FILE_NAME" >> $GITHUB_ENV
-        echo VCMI_PACKAGE_NAME_SUFFIX="$VCMI_PACKAGE_NAME_SUFFIX" >> $GITHUB_ENV
-        echo VCMI_PACKAGE_GOLDMASTER="$VCMI_PACKAGE_GOLDMASTER" >> $GITHUB_ENV
-      env:
-        PULL_REQUEST: ${{ github.event.pull_request.number }}
-
-    - name: CMake Preset
-      run: |
-        cmake --preset ${{ matrix.preset }}
-
-    - name: Build Preset
-      run: |
-        cmake --build --preset ${{matrix.preset}}
-
-    - name: Download libs x64
-      uses: actions/download-artifact@v4
-      with:
-        name: Android JNI android-64
-        path: ${{ github.workspace }}/android/vcmi-app/src/main/jniLibs/
- 
-    - name: Create Android package
-      run: |
-        cd android
-        ./gradlew bundleRelease --info
-        echo ANDROID_APK_PATH="$(ls ${{ github.workspace }}/android/vcmi-app/build/outputs/bundle/release/*.aab)" >> $GITHUB_ENV
-      env:
-        ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-        ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-
-    - name: Android artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.VCMI_PACKAGE_FILE_NAME }}
-        path: |
-          ${{ env.ANDROID_APK_PATH }}
-
 
   deploy-src:
+    if: always() && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     defaults:
       run:
-        shell: pwsh
+        shell: bash
     steps:
         - uses: actions/checkout@v4
           with:
             submodules: recursive
-            
+
+        - name: Build Number
+          run: |
+            source '${{github.workspace}}/CI/get_package_name.sh'
+            if [ '${{ matrix.artifact_platform }}' ]; then
+              VCMI_PACKAGE_FILE_NAME+="-${{ matrix.artifact_platform }}"
+            fi
+            echo VCMI_PACKAGE_FILE_NAME="$VCMI_PACKAGE_FILE_NAME" >> $GITHUB_ENV
+            echo VCMI_PACKAGE_NAME_SUFFIX="$VCMI_PACKAGE_NAME_SUFFIX" >> $GITHUB_ENV
+            echo VCMI_PACKAGE_GOLDMASTER="$VCMI_PACKAGE_GOLDMASTER" >> $GITHUB_ENV
+          env:
+            PULL_REQUEST: ${{ github.event.pull_request.number }}
+
         - name: Create source code archive (including submodules)
           run: |
-            git archive HEAD -o "release.zip" --worktree-attributes -v
+            git archive HEAD -o "release.tar.gz" --worktree-attributes -v
             git submodule update --init --recursive
-            git submodule --quiet foreach 'cd "$toplevel"; zip -ru "release.zip" "$sm_path"'
-            unzip -q release.zip -d ./src
+            git submodule --quiet foreach 'cd "$toplevel"; tar -cvzf "release.tar.gz" "$sm_path"'
             
         - name: Upload source code archive
           uses: actions/upload-artifact@v4
           with:
-            name: src
+            name: ${{ env.VCMI_PACKAGE_FILE_NAME }}
             path: |
-              ./src
+              ./release.tar.gz
