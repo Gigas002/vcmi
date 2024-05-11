@@ -38,9 +38,10 @@ jobs:
 
         - name: Create source code archive (including submodules)
           run: |
-            git archive HEAD -o "release.tar.gz" --worktree-attributes -v
+            git archive HEAD -o "release.tar" --worktree-attributes -v
             git submodule update --init --recursive
-            git submodule --quiet foreach 'cd "$toplevel"; tar -cvzf "release.tar.gz" "$sm_path"'
+            git submodule --quiet foreach 'cd "$toplevel"; tar -rvf "release.tar" "$sm_path"'
+            gzip release.tar
             
         - name: Upload source code archive
           uses: actions/upload-artifact@v4
